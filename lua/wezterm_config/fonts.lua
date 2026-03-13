@@ -12,4 +12,3 @@ function M.apply(config, wezterm)
 end
 
 return M
-

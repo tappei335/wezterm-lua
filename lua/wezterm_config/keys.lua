@@ -160,6 +160,7 @@ function M.apply(config, wezterm)
     { key = 'c', mods = 'LEADER', action = act.SpawnTab('CurrentPaneDomain') },
     { key = '-', mods = 'LEADER', action = act.SplitVertical({ domain = 'CurrentPaneDomain' }) },
     { key = '\\', mods = 'LEADER', action = act.SplitHorizontal({ domain = 'CurrentPaneDomain' }) },
+    { key = 'q', mods = 'LEADER', action = act.CloseCurrentPane({ confirm = false }) },
     { key = 'x', mods = 'LEADER', action = act.CloseCurrentPane({ confirm = false }) },
     { key = 'z', mods = 'LEADER', action = act.TogglePaneZoomState },
     { key = 'h', mods = 'LEADER', action = act.ActivatePaneDirection('Left') },
