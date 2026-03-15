@@ -2,11 +2,11 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
-$targetHome = $HOME
+$targetHome = Join-Path $HOME '.config/wezterm'
 
 Write-Host "Installing WezTerm config into $targetHome"
 
-Copy-Item -Path (Join-Path $repoRoot '.wezterm.lua') -Destination (Join-Path $targetHome '.wezterm.lua') -Force
+Copy-Item -Path (Join-Path $repoRoot 'wezterm.lua') -Destination (Join-Path $targetHome 'wezterm.lua') -Force
 
 $targetLuaDir = Join-Path $targetHome 'lua'
 if (Test-Path $targetLuaDir) {

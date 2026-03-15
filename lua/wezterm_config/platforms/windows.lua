@@ -6,7 +6,7 @@ function M.apply(config, wezterm)
   config.default_prog = { 'pwsh.exe', '-NoLogo' }
   config.use_ime = true
   config.color_scheme = 'Kanagawa (Gogh)'
-  config.window_background_opacity = 0.98
+  config.window_background_opacity = 0.85
 
   util.append_keys(config, {
     {
