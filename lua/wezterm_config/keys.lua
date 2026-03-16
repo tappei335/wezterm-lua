@@ -104,40 +104,150 @@ local function build_target_widths(total_width, count)
   return widths
 end
 
-local function equalize_columns(window, act, columns)
+local function sum_column_widths(columns, last_index)
+  local total = 0
+  for i = 1, last_index do
+    total = total + columns[i].width
+  end
+  return total
+end
+
+local function opposite_direction(direction)
+  if direction == 'Left' then
+    return 'Right'
+  end
+  return 'Left'
+end
+
+local function get_wezterm_cli_path(wezterm)
+  if wezterm.target_triple:find('windows') then
+    return wezterm.executable_dir .. '\\wezterm.exe'
+  end
+  return wezterm.executable_dir .. '/wezterm'
+end
+
+local function adjust_pane_size(window, act, wezterm, pane, direction, amount)
+  local ok, _, stderr = wezterm.run_child_process({
+    get_wezterm_cli_path(wezterm),
+    'cli',
+    'adjust-pane-size',
+    '--pane-id',
+    tostring(pane:pane_id()),
+    '--amount',
+    tostring(amount),
+    direction,
+  })
+
+  if ok then
+    return true
+  end
+
+  if stderr and stderr ~= '' then
+    wezterm.log_warn(stderr)
+  end
+
+  pane:activate()
+  wezterm.sleep_ms(1)
+  window:perform_action(act.AdjustPaneSize({ direction, amount }), pane)
+  return true
+end
+
+local function try_adjust_boundary_step(window, act, wezterm, tab, column_provider, boundary_index, increase_prefix)
+  local columns = column_provider(tab)
+  if #columns <= boundary_index then
+    return false
+  end
+
+  local current_prefix = sum_column_widths(columns, boundary_index)
+  local direction = increase_prefix and 'Right' or 'Left'
+  local candidates = {
+    {
+      pane = columns[boundary_index].pane,
+      direction = direction,
+    },
+    {
+      pane = columns[boundary_index + 1].pane,
+      direction = direction,
+    },
+  }
+
+  for _, candidate in ipairs(candidates) do
+    candidate.pane:activate()
+    wezterm.sleep_ms(1)
+    adjust_pane_size(window, act, wezterm, candidate.pane, candidate.direction, 1)
+    wezterm.sleep_ms(1)
+
+    local updated_columns = column_provider(tab)
+    if #updated_columns ~= #columns then
+      return false
+    end
+
+    local movement = sum_column_widths(updated_columns, boundary_index) - current_prefix
+    if increase_prefix and movement > 0 then
+      return true
+    end
+
+    if (not increase_prefix) and movement < 0 then
+      return true
+    end
+
+    if movement ~= 0 then
+      adjust_pane_size(window, act, wezterm, candidate.pane, opposite_direction(candidate.direction), math.abs(movement))
+      wezterm.sleep_ms(1)
+    end
+  end
+
+  return false
+end
+
+local function equalize_columns(window, act, wezterm, tab, column_provider)
+  local columns = column_provider(tab)
   if #columns < 2 then
     return false
   end
 
-  local total_width = 0
-  local current_widths = {}
-  for i, column in ipairs(columns) do
-    total_width = total_width + column.width
-    current_widths[i] = column.width
-  end
-
-  local target_widths = build_target_widths(total_width, #columns)
-  local current_prefix = 0
-  local target_prefix = 0
-
-  for i = 1, #columns - 1 do
-    current_prefix = current_prefix + current_widths[i]
-    target_prefix = target_prefix + target_widths[i]
-
-    local delta = target_prefix - current_prefix
-    if delta > 0 then
-      window:perform_action(act.AdjustPaneSize({ 'Right', delta }), columns[i].pane)
-      current_widths[i] = current_widths[i] + delta
-      current_widths[i + 1] = current_widths[i + 1] - delta
-      current_prefix = target_prefix
-    elseif delta < 0 then
-      window:perform_action(act.AdjustPaneSize({ 'Left', -delta }), columns[i].pane)
-      current_widths[i] = current_widths[i] + delta
-      current_widths[i + 1] = current_widths[i + 1] - delta
-      current_prefix = target_prefix
+  local starting_pane = tab:active_pane()
+  local function restore_starting_pane()
+    if starting_pane then
+      starting_pane:activate()
     end
   end
 
+  local total_width = sum_column_widths(columns, #columns)
+  local target_widths = build_target_widths(total_width, #columns)
+  local target_prefix = 0
+
+  for i = 1, #columns - 1 do
+    target_prefix = target_prefix + target_widths[i]
+    local max_steps = total_width
+
+    for _ = 1, max_steps do
+      columns = column_provider(tab)
+      if #columns ~= #target_widths then
+        restore_starting_pane()
+        return false
+      end
+
+      local current_prefix = sum_column_widths(columns, i)
+      local delta = target_prefix - current_prefix
+      if delta == 0 then
+        break
+      end
+
+      if not try_adjust_boundary_step(window, act, wezterm, tab, column_provider, i, delta > 0) then
+        restore_starting_pane()
+        return false
+      end
+    end
+
+    columns = column_provider(tab)
+    if #columns ~= #target_widths or sum_column_widths(columns, i) ~= target_prefix then
+      restore_starting_pane()
+      return false
+    end
+  end
+
+  restore_starting_pane()
   return true
 end
 
@@ -184,12 +294,23 @@ function M.apply(config, wezterm)
 
         local total_cols, total_rows = get_tab_extent(panes)
         local columns = collect_full_height_columns(panes, total_cols, total_rows)
+        local column_provider
 
-        if #columns < 2 then
-          columns = collect_row_columns(panes, active)
+        if #columns >= 2 then
+          column_provider = function(current_tab)
+            local current_panes = current_tab:panes_with_info()
+            local current_total_cols, current_total_rows = get_tab_extent(current_panes)
+            return collect_full_height_columns(current_panes, current_total_cols, current_total_rows)
+          end
+        else
+          column_provider = function(current_tab)
+            local current_panes = current_tab:panes_with_info()
+            local current_active = get_active_pane_info(current_panes)
+            return collect_row_columns(current_panes, current_active)
+          end
         end
 
-        if not equalize_columns(window, act, columns) then
+        if not equalize_columns(window, act, wezterm, tab, column_provider) then
           window:toast_notification('wezterm', 'No horizontal pane group to equalize', nil, 2000)
         end
       end),
