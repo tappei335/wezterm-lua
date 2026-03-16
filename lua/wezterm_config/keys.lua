@@ -89,6 +89,75 @@ local function collect_row_columns(panes, active)
   return columns
 end
 
+local function collect_full_width_rows(panes, total_cols, total_rows)
+  local groups = {}
+
+  for _, info in ipairs(panes) do
+    local key = string.format('%d:%d', info.top, info.height)
+    local group = groups[key]
+
+    if not group then
+      group = {
+        top = info.top,
+        height = info.height,
+        width = 0,
+        pane = info.pane,
+      }
+      groups[key] = group
+    end
+
+    group.width = group.width + info.width
+  end
+
+  local rows = {}
+  for _, group in pairs(groups) do
+    if group.width == total_cols then
+      table.insert(rows, group)
+    end
+  end
+
+  table.sort(rows, function(a, b)
+    return a.top < b.top
+  end)
+
+  local expected_top = 0
+  for _, row in ipairs(rows) do
+    if row.top ~= expected_top then
+      return {}
+    end
+    expected_top = expected_top + row.height
+  end
+
+  if expected_top ~= total_rows then
+    return {}
+  end
+
+  return rows
+end
+
+local function collect_column_rows(panes, active)
+  if not active then
+    return {}
+  end
+
+  local rows = {}
+  for _, info in ipairs(panes) do
+    if info.left == active.left and info.width == active.width then
+      table.insert(rows, {
+        top = info.top,
+        height = info.height,
+        pane = info.pane,
+      })
+    end
+  end
+
+  table.sort(rows, function(a, b)
+    return a.top < b.top
+  end)
+
+  return rows
+end
+
 local function build_target_widths(total_width, count)
   local widths = {}
   local base = math.floor(total_width / count)
@@ -116,7 +185,13 @@ local function opposite_direction(direction)
   if direction == 'Left' then
     return 'Right'
   end
-  return 'Left'
+  if direction == 'Right' then
+    return 'Left'
+  end
+  if direction == 'Up' then
+    return 'Down'
+  end
+  return 'Up'
 end
 
 local function get_wezterm_cli_path(wezterm)
@@ -251,6 +326,113 @@ local function equalize_columns(window, act, wezterm, tab, column_provider)
   return true
 end
 
+local function sum_row_heights(rows, last_index)
+  local total = 0
+  for i = 1, last_index do
+    total = total + rows[i].height
+  end
+  return total
+end
+
+local function try_adjust_horizontal_boundary_step(window, act, wezterm, tab, row_provider, boundary_index, increase_prefix)
+  local rows = row_provider(tab)
+  if #rows <= boundary_index then
+    return false
+  end
+
+  local current_prefix = sum_row_heights(rows, boundary_index)
+  local direction = increase_prefix and 'Down' or 'Up'
+  local candidates = {
+    {
+      pane = rows[boundary_index].pane,
+      direction = direction,
+    },
+    {
+      pane = rows[boundary_index + 1].pane,
+      direction = direction,
+    },
+  }
+
+  for _, candidate in ipairs(candidates) do
+    candidate.pane:activate()
+    wezterm.sleep_ms(1)
+    adjust_pane_size(window, act, wezterm, candidate.pane, candidate.direction, 1)
+    wezterm.sleep_ms(1)
+
+    local updated_rows = row_provider(tab)
+    if #updated_rows ~= #rows then
+      return false
+    end
+
+    local movement = sum_row_heights(updated_rows, boundary_index) - current_prefix
+    if increase_prefix and movement > 0 then
+      return true
+    end
+
+    if (not increase_prefix) and movement < 0 then
+      return true
+    end
+
+    if movement ~= 0 then
+      adjust_pane_size(window, act, wezterm, candidate.pane, opposite_direction(candidate.direction), math.abs(movement))
+      wezterm.sleep_ms(1)
+    end
+  end
+
+  return false
+end
+
+local function equalize_rows(window, act, wezterm, tab, row_provider)
+  local rows = row_provider(tab)
+  if #rows < 2 then
+    return false
+  end
+
+  local starting_pane = tab:active_pane()
+  local function restore_starting_pane()
+    if starting_pane then
+      starting_pane:activate()
+    end
+  end
+
+  local total_height = sum_row_heights(rows, #rows)
+  local target_heights = build_target_widths(total_height, #rows)
+  local target_prefix = 0
+
+  for i = 1, #rows - 1 do
+    target_prefix = target_prefix + target_heights[i]
+    local max_steps = total_height
+
+    for _ = 1, max_steps do
+      rows = row_provider(tab)
+      if #rows ~= #target_heights then
+        restore_starting_pane()
+        return false
+      end
+
+      local current_prefix = sum_row_heights(rows, i)
+      local delta = target_prefix - current_prefix
+      if delta == 0 then
+        break
+      end
+
+      if not try_adjust_horizontal_boundary_step(window, act, wezterm, tab, row_provider, i, delta > 0) then
+        restore_starting_pane()
+        return false
+      end
+    end
+
+    rows = row_provider(tab)
+    if #rows ~= #target_heights or sum_row_heights(rows, i) ~= target_prefix then
+      restore_starting_pane()
+      return false
+    end
+  end
+
+  restore_starting_pane()
+  return true
+end
+
 function M.apply(config, wezterm)
   local act = wezterm.action
 
@@ -312,6 +494,44 @@ function M.apply(config, wezterm)
 
         if not equalize_columns(window, act, wezterm, tab, column_provider) then
           window:toast_notification('wezterm', 'No horizontal pane group to equalize', nil, 2000)
+        end
+      end),
+    },
+    {
+      key = '+',
+      mods = 'LEADER|SHIFT',
+      action = wezterm.action_callback(function(window, pane)
+        local tab = pane:tab()
+        if not tab then
+          return
+        end
+
+        local panes = tab:panes_with_info()
+        local active = get_active_pane_info(panes)
+        if not active or active.is_zoomed then
+          return
+        end
+
+        local total_cols, total_rows = get_tab_extent(panes)
+        local rows = collect_full_width_rows(panes, total_cols, total_rows)
+        local row_provider
+
+        if #rows >= 2 then
+          row_provider = function(current_tab)
+            local current_panes = current_tab:panes_with_info()
+            local current_total_cols, current_total_rows = get_tab_extent(current_panes)
+            return collect_full_width_rows(current_panes, current_total_cols, current_total_rows)
+          end
+        else
+          row_provider = function(current_tab)
+            local current_panes = current_tab:panes_with_info()
+            local current_active = get_active_pane_info(current_panes)
+            return collect_column_rows(current_panes, current_active)
+          end
+        end
+
+        if not equalize_rows(window, act, wezterm, tab, row_provider) then
+          window:toast_notification('wezterm', 'No vertical pane group to equalize', nil, 2000)
         end
       end),
     },
