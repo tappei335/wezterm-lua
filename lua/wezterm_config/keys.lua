@@ -32,10 +32,12 @@ function M.apply(config, wezterm)
     { key = 'c', mods = 'CTRL', action = copy_or_sigtstp },
     { key = 'v', mods = 'CTRL', action = act.PasteFrom('Clipboard') },
 
-    { key = 'LeftArrow', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection('Left') },
-    { key = 'DownArrow', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection('Down') },
-    { key = 'UpArrow', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection('Up') },
-    { key = 'RightArrow', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection('Right') },
+    { key = 'LeftArrow', mods = 'CTRL', action = act.ActivatePaneDirection('Left') },
+    { key = 'DownArrow', mods = 'CTRL', action = act.ActivatePaneDirection('Down') },
+    { key = 'UpArrow', mods = 'CTRL', action = act.ActivatePaneDirection('Up') },
+    { key = 'RightArrow', mods = 'CTRL', action = act.ActivatePaneDirection('Right') },
+    { key = 'LeftArrow', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(-1) },
+    { key = 'RightArrow', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(1) },
 
     { key = '\'', mods = 'CTRL', action = act.SplitHorizontal({ domain="CurrentPaneDomain" }) },
     { key = 't', mods = 'CTRL', action = act.SplitHorizontal({ domain="CurrentPaneDomain" }) },
