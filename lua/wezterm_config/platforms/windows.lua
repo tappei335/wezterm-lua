@@ -6,7 +6,7 @@ function M.apply(config, wezterm)
   config.default_prog = { 'pwsh.exe', '-NoLogo' }
   config.use_ime = true
   config.color_scheme = 'Kanagawa (Gogh)'
-  -- config.disable_default_key_bindings = true
+  config.disable_default_key_bindings = true
   
   -- bell
   config.audible_bell = "Disabled"

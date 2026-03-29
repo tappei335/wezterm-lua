@@ -3,6 +3,19 @@ local pane_equalize = require('wezterm_config.pane_equalize')
 
 function M.apply(config, wezterm)
   local act = wezterm.action
+  local copy_or_sigtstp = wezterm.action_callback(function(window, pane)
+    if window:get_selection_text_for_pane(pane) ~= '' then
+      window:perform_action(act.CopyTo('Clipboard'), pane)
+      return
+    end
+
+    window:perform_action(act.SendKey({ key = 'z', mods = 'CTRL' }), pane)
+  end)
+  local equalize_layout_columns = wezterm.action_callback(function(window, pane)
+    local ok, message = pane_equalize.equalize_layout_columns(window, pane, wezterm)
+    -- local title = ok and 'layout-equalize' or 'layout-equalize failed'
+    -- window:toast_notification(title, message or 'No message', nil, 2000)
+  end)
 
   config.leader = {
     key = 'a',
@@ -16,7 +29,7 @@ function M.apply(config, wezterm)
       mods = 'LEADER|CTRL',
       action = act.SendKey({ key = 'a', mods = 'CTRL' }),
     },
-    { key = 'c', mods = 'CTRL', action = act.CopyTo('Clipboard') },
+    { key = 'c', mods = 'CTRL', action = copy_or_sigtstp },
     { key = 'v', mods = 'CTRL', action = act.PasteFrom('Clipboard') },
 
     { key = 'LeftArrow', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection('Left') },
@@ -40,7 +53,7 @@ function M.apply(config, wezterm)
     { key = '-', mods = 'LEADER', action = act.SplitVertical({ domain = 'CurrentPaneDomain' }) },
     {
       key = 'h',
-      mods = 'CTRL|SHIFT',
+      mods = 'LEADER',
       action = wezterm.action_callback(function(_, pane)
         local new_pane = pane_equalize.split_horizontally(pane)
         if new_pane then
@@ -49,22 +62,14 @@ function M.apply(config, wezterm)
       end),
     },
     { key = 'z', mods = 'LEADER', action = act.TogglePaneZoomState },
-    {
-      key = '=',
-      mods = 'LEADER',
-      action = wezterm.action_callback(function(window, pane)
-        local ok, message = pane_equalize.equalize_full_height_columns(window, pane, wezterm)
-        if not ok and message then
-          window:toast_notification('wezterm', message, nil, 2000)
-        end
-      end),
-    },
+    { key = '=', mods = 'LEADER', action = equalize_layout_columns },
+    { key = '=', mods = 'LEADER|SHIFT', action = equalize_layout_columns },
     -- { key = 'H', mods = 'LEADER|SHIFT', action = act.AdjustPaneSize({ 'Left', 5 }) },
     -- { key = 'J', mods = 'LEADER|SHIFT', action = act.AdjustPaneSize({ 'Down', 5 }) },
     -- { key = 'K', mods = 'LEADER|SHIFT', action = act.AdjustPaneSize({ 'Up', 5 }) },
     -- { key = 'L', mods = 'LEADER|SHIFT', action = act.AdjustPaneSize({ 'Right', 5 }) },
-    { key = 'p', mods = 'LEADER', action = act.ActivateCommandPalette },
-    { key = 'Space', mods = 'CTRL|SHIFT', action = act.QuickSelect },
+    -- { key = 'p', mods = 'LEADER', action = act.ActivateCommandPalette },
+    -- { key = 'Space', mods = 'CTRL|SHIFT', action = act.QuickSelect },
   }
 end
 

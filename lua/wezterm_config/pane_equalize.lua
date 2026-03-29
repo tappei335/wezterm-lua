@@ -65,16 +65,40 @@ local function collect_full_height_columns(panes, total_cols, total_rows, target
     return a.left < b.left
   end)
 
-  local expected_left = 0
+  local previous_right = nil
   for _, column in ipairs(columns) do
-    if column.left ~= expected_left then
+    if previous_right ~= nil and column.left < previous_right then
       return {}
     end
-    expected_left = expected_left + column.width
+    previous_right = column.left + column.width
   end
 
-  if expected_left ~= total_cols then
-    return {}
+  return columns
+end
+
+local function collect_row_columns(panes, total_cols, target_row)
+  local columns = {}
+
+  for _, info in ipairs(panes) do
+    if pane_covers_row(info, target_row) then
+      table.insert(columns, {
+        left = info.left,
+        width = info.width,
+        pane = info.pane,
+      })
+    end
+  end
+
+  table.sort(columns, function(a, b)
+    return a.left < b.left
+  end)
+
+  local previous_right = nil
+  for _, column in ipairs(columns) do
+    if previous_right ~= nil and column.left < previous_right then
+      return {}
+    end
+    previous_right = column.left + column.width
   end
 
   return columns
@@ -86,6 +110,70 @@ local function build_full_height_column_provider(target_row)
     local total_cols, total_rows = get_tab_extent(panes)
     return collect_full_height_columns(panes, total_cols, total_rows, target_row)
   end
+end
+
+local function build_row_column_provider(target_row)
+  return function(tab)
+    local panes = tab:panes_with_info()
+    local total_cols = get_tab_extent(panes)
+    return collect_row_columns(panes, total_cols, target_row)
+  end
+end
+
+local function collect_candidate_rows(panes)
+  local row_boundaries = {}
+  local row_candidates = {}
+
+  for _, info in ipairs(panes) do
+    row_boundaries[info.top] = true
+    row_boundaries[info.top + info.height] = true
+    row_candidates[info.top + math.floor((info.height - 1) / 2)] = true
+  end
+
+  local sorted_boundaries = {}
+  for boundary in pairs(row_boundaries) do
+    table.insert(sorted_boundaries, boundary)
+  end
+
+  table.sort(sorted_boundaries)
+
+  local rows = {}
+  for i = 1, #sorted_boundaries - 1 do
+    local top = sorted_boundaries[i]
+    local bottom = sorted_boundaries[i + 1]
+    if bottom > top then
+      row_candidates[top + math.floor((bottom - top - 1) / 2)] = true
+    end
+  end
+
+  for row in pairs(row_candidates) do
+    table.insert(rows, row)
+  end
+
+  table.sort(rows)
+
+  return rows
+end
+
+local function select_primary_column_row(panes, total_cols, active)
+  local best_row = nil
+  local best_columns = {}
+
+  for _, row in ipairs(collect_candidate_rows(panes)) do
+    local columns = collect_row_columns(panes, total_cols, row)
+    local should_replace = #columns > #best_columns
+
+    if not should_replace and #columns == #best_columns and active and pane_covers_row(active, row) then
+      should_replace = best_row == nil or not pane_covers_row(active, best_row)
+    end
+
+    if should_replace then
+      best_row = row
+      best_columns = columns
+    end
+  end
+
+  return best_row, best_columns
 end
 
 local function columns_are_even(columns)
@@ -172,6 +260,18 @@ local function build_prefix_widths(columns, last_index)
   return prefixes
 end
 
+local function build_target_prefixes(widths)
+  local prefixes = {}
+  local total = 0
+
+  for i = 1, #widths - 1 do
+    total = total + widths[i]
+    prefixes[i] = total
+  end
+
+  return prefixes
+end
+
 local function opposite_direction(direction)
   if direction == 'Left' then
     return 'Right'
@@ -179,46 +279,7 @@ local function opposite_direction(direction)
   return 'Left'
 end
 
-local function get_wezterm_cli_path(wezterm)
-  if wezterm.target_triple:find('windows') then
-    return wezterm.executable_dir .. '\\wezterm.exe'
-  end
-  return wezterm.executable_dir .. '/wezterm'
-end
-
 local function adjust_pane_size(window, act, wezterm, pane, direction, amount)
-  local cli_path = get_wezterm_cli_path(wezterm)
-  local pane_id = tostring(pane:pane_id())
-
-  local activated, _, activate_stderr = wezterm.run_child_process({
-    cli_path,
-    'cli',
-    'activate-pane',
-    '--pane-id',
-    pane_id,
-  })
-
-  if not activated and activate_stderr and activate_stderr ~= '' then
-    wezterm.log_warn(activate_stderr)
-  end
-
-  local ok, _, stderr = wezterm.run_child_process({
-    cli_path,
-    'cli',
-    'adjust-pane-size',
-    '--amount',
-    tostring(amount),
-    direction,
-  })
-
-  if ok then
-    return true
-  end
-
-  if stderr and stderr ~= '' then
-    wezterm.log_warn(stderr)
-  end
-
   pane:activate()
   wezterm.sleep_ms(1)
   window:perform_action(act.AdjustPaneSize({ direction, amount }), pane)
@@ -235,24 +296,73 @@ local function prefixes_match(actual, expected, last_index)
   return true
 end
 
-local function try_adjust_boundary_step(window, act, wezterm, tab, column_provider, boundary_index, increase_prefix, locked_prefixes, amount)
+local function append_boundary_candidates(candidates, seen, panes, edge_getter, boundary_start, boundary_end, direction)
+  for _, info in ipairs(panes) do
+    local edge = edge_getter(info)
+    if boundary_start <= edge and edge <= boundary_end then
+      local pane_id = info.pane:pane_id()
+      local key = string.format('%s:%s', pane_id, direction)
+      if not seen[key] then
+        table.insert(candidates, {
+          pane = info.pane,
+          direction = direction,
+        })
+        seen[key] = true
+      end
+    end
+  end
+end
+
+local function build_boundary_candidates(tab, columns, boundary_index, increase_prefix)
+  local panes = tab:panes_with_info()
+  local leading = columns[boundary_index]
+  local trailing = columns[boundary_index + 1]
+  local boundary_start = leading.left + leading.width
+  local boundary_end = math.max(boundary_start, trailing.left)
+  local leading_direction = increase_prefix and 'Right' or 'Left'
+  local trailing_direction = opposite_direction(leading_direction)
+  local seen = {}
+  local candidates = {}
+
+  local function pane_right(info)
+    return info.left + info.width
+  end
+
+  local function pane_left(info)
+    return info.left
+  end
+
+  append_boundary_candidates(candidates, seen, panes, pane_right, boundary_start, boundary_end, leading_direction)
+  append_boundary_candidates(candidates, seen, panes, pane_left, boundary_start, boundary_end, trailing_direction)
+  append_boundary_candidates(candidates, seen, panes, pane_right, boundary_start, boundary_end, opposite_direction(leading_direction))
+  append_boundary_candidates(candidates, seen, panes, pane_left, boundary_start, boundary_end, opposite_direction(trailing_direction))
+
+  local fallback_candidates = {
+    { pane = leading.pane, direction = leading_direction },
+    { pane = trailing.pane, direction = trailing_direction },
+    { pane = leading.pane, direction = opposite_direction(leading_direction) },
+    { pane = trailing.pane, direction = opposite_direction(trailing_direction) },
+  }
+
+  for _, candidate in ipairs(fallback_candidates) do
+    local key = string.format('%s:%s', candidate.pane:pane_id(), candidate.direction)
+    if not seen[key] then
+      table.insert(candidates, candidate)
+      seen[key] = true
+    end
+  end
+
+  return candidates
+end
+
+local function try_adjust_boundary_step(window, act, wezterm, tab, column_provider, boundary_index, increase_prefix, amount)
   local columns = column_provider(tab)
   if #columns <= boundary_index then
     return false
   end
 
-  local current_prefixes = build_prefix_widths(columns, boundary_index)
-  local current_prefix = current_prefixes[boundary_index]
-  local leading_pane = columns[boundary_index].pane
-  local trailing_pane = columns[boundary_index + 1].pane
-  local primary_direction = increase_prefix and 'Right' or 'Left'
-  local secondary_direction = opposite_direction(primary_direction)
-  local candidates = {
-    increase_prefix and { pane = leading_pane, direction = primary_direction } or { pane = trailing_pane, direction = primary_direction },
-    increase_prefix and { pane = trailing_pane, direction = primary_direction } or { pane = leading_pane, direction = primary_direction },
-    increase_prefix and { pane = leading_pane, direction = secondary_direction } or { pane = trailing_pane, direction = secondary_direction },
-    increase_prefix and { pane = trailing_pane, direction = secondary_direction } or { pane = leading_pane, direction = secondary_direction },
-  }
+  local current_prefix = sum_column_widths(columns, boundary_index)
+  local candidates = build_boundary_candidates(tab, columns, boundary_index, increase_prefix)
 
   for _, candidate in ipairs(candidates) do
     adjust_pane_size(window, act, wezterm, candidate.pane, candidate.direction, amount)
@@ -263,19 +373,18 @@ local function try_adjust_boundary_step(window, act, wezterm, tab, column_provid
       return false
     end
 
-    local updated_prefixes = build_prefix_widths(updated_columns, boundary_index)
-    local movement = updated_prefixes[boundary_index] - current_prefix
-    local previous_boundaries_unchanged = prefixes_match(updated_prefixes, locked_prefixes, boundary_index - 1)
+    local updated_prefix = sum_column_widths(updated_columns, boundary_index)
+    local movement = updated_prefix - current_prefix
 
-    if previous_boundaries_unchanged and increase_prefix and movement > 0 then
+    if increase_prefix and movement > 0 then
       return true
     end
 
-    if previous_boundaries_unchanged and (not increase_prefix) and movement < 0 then
+    if (not increase_prefix) and movement < 0 then
       return true
     end
 
-    if movement ~= 0 or not previous_boundaries_unchanged then
+    if movement ~= 0 then
       local reverted = false
       local revert_amount = amount
       if movement ~= 0 then
@@ -290,8 +399,8 @@ local function try_adjust_boundary_step(window, act, wezterm, tab, column_provid
           return false
         end
 
-        local reverted_prefixes = build_prefix_widths(reverted_columns, boundary_index)
-        if prefixes_match(reverted_prefixes, current_prefixes, boundary_index) then
+        local reverted_prefix = sum_column_widths(reverted_columns, boundary_index)
+        if reverted_prefix == current_prefix then
           reverted = true
           break
         end
@@ -306,7 +415,7 @@ local function try_adjust_boundary_step(window, act, wezterm, tab, column_provid
   return false
 end
 
-local function equalize_columns(window, act, wezterm, tab, column_provider)
+local function equalize_column_widths(window, act, wezterm, tab, column_provider)
   local columns = column_provider(tab)
   if #columns < 2 then
     return false
@@ -321,15 +430,13 @@ local function equalize_columns(window, act, wezterm, tab, column_provider)
 
   local total_width = sum_column_widths(columns, #columns)
   local target_widths = build_target_widths(total_width, #columns)
-  local target_prefix = 0
-  local locked_prefixes = {}
+  local target_prefixes = build_target_prefixes(target_widths)
+  local max_passes = total_width * #columns
 
-  for i = 1, #columns - 1 do
-    target_prefix = target_prefix + target_widths[i]
-    locked_prefixes[i] = target_prefix
-    local max_steps = total_width
+  for _ = 1, max_passes do
+    local progressed = false
 
-    for _ = 1, max_steps do
+    for i = 1, #target_widths - 1 do
       columns = column_provider(tab)
       if #columns ~= #target_widths then
         restore_starting_pane()
@@ -337,27 +444,34 @@ local function equalize_columns(window, act, wezterm, tab, column_provider)
       end
 
       local current_prefix = sum_column_widths(columns, i)
-      local delta = target_prefix - current_prefix
-      if delta == 0 then
-        break
-      end
-
-      local amount = math.min(math.abs(delta), 8)
-      if not try_adjust_boundary_step(window, act, wezterm, tab, column_provider, i, delta > 0, locked_prefixes, amount) then
-        restore_starting_pane()
-        return false
+      local delta = target_prefixes[i] - current_prefix
+      if delta ~= 0 then
+        local amount = math.min(math.abs(delta), 8)
+        if try_adjust_boundary_step(window, act, wezterm, tab, column_provider, i, delta > 0, amount) then
+          progressed = true
+        end
       end
     end
 
     columns = column_provider(tab)
-    if #columns ~= #target_widths or not prefixes_match(build_prefix_widths(columns, i), locked_prefixes, i) then
+    if #columns ~= #target_widths then
+      restore_starting_pane()
+      return false
+    end
+
+    if prefixes_match(build_prefix_widths(columns, #columns - 1), target_prefixes, #columns - 1) then
+      restore_starting_pane()
+      return true
+    end
+
+    if not progressed then
       restore_starting_pane()
       return false
     end
   end
 
   restore_starting_pane()
-  return true
+  return false
 end
 
 function M.split_horizontally(pane)
@@ -382,31 +496,38 @@ function M.split_horizontally(pane)
   })
 end
 
-function M.equalize_full_height_columns(window, pane, wezterm)
+function M.equalize_layout_columns(window, pane, wezterm)
   local tab = pane:tab()
   if not tab then
-    return false
+    return false, 'Active pane is not attached to a tab'
   end
 
   local panes = tab:panes_with_info()
   local active = get_active_pane_info(panes)
-  if not active or active.is_zoomed then
-    return false
+  if not active then
+    return false, 'Could not determine the active pane'
   end
 
-  local total_cols, total_rows = get_tab_extent(panes)
-  local target_row = active.top + math.floor(active.height / 2)
-  local columns = collect_full_height_columns(panes, total_cols, total_rows, target_row)
+  if active.is_zoomed then
+    return false, 'Pane is zoomed; unzoom it before equalizing columns'
+  end
+
+  local total_cols = get_tab_extent(panes)
+  local target_row, columns = select_primary_column_row(panes, total_cols, active)
   if #columns < 2 then
-    return false, 'No full-height pane columns to equalize'
+    return false, 'No columns in the current layout to equalize'
   end
 
-  local ok = equalize_columns(window, wezterm.action, wezterm, tab, build_full_height_column_provider(target_row))
+  if columns_are_even(columns) then
+    return true, 'Layout columns are already even'
+  end
+
+  local ok = equalize_column_widths(window, wezterm.action, wezterm, tab, build_row_column_provider(target_row))
   if not ok then
-    return false, 'Failed to equalize full-height pane columns'
+    return false, 'Failed to equalize layout columns'
   end
 
-  return true
+  return true, 'Equalized layout columns'
 end
 
 return M
