@@ -7,6 +7,9 @@ function M.apply(config, wezterm)
   config.use_ime = true
   config.color_scheme = 'Kanagawa (Gogh)'
   -- config.disable_default_key_bindings = true
+  
+  -- bell
+  config.audible_bell = "Disabled"
 
   util.append_keys(config, {
     {

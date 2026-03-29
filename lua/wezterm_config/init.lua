@@ -14,6 +14,7 @@ for _, module_name in ipairs(platform.module_names(wezterm)) do
 end
 
 local config = wezterm.config_builder and wezterm.config_builder() or {}
+config.automatically_reload_config = true 
 
 for _, module_name in ipairs(module_names) do
   local module = require(module_name)

@@ -9,7 +9,7 @@ TARGET_HOME="${HOME}/.config/wezterm/"
 echo "Installing WezTerm config into ${TARGET_HOME}"
 
 make -p ${TARGET_HOME}
-cp "${REPO_ROOT}/wezterm.lua" "${TARGET_HOME}/wezterm.lua"
+cp "${REPO_ROOT}/wezterm.lua" "${TARGET_HOME}/wezterm.lua"  
 rm -rf "${TARGET_HOME}/lua"
 cp -R "${REPO_ROOT}/lua" "${TARGET_HOME}/lua"
 
