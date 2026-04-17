@@ -7,6 +7,7 @@ local module_names = {
   'wezterm_config.fonts',
   'wezterm_config.keys',
   'wezterm_config.workspaces',
+  'wezterm_config.ssh',
   'wezterm_config.status',
 }
 
