@@ -20,19 +20,19 @@ local function default_ssh_domains(wezterm)
   return domains
 end
 
-local function plain_ssh_host_name(domain_name)
+local function ssh_host_name(domain_name, prefix)
   if type(domain_name) ~= 'string' then
     return nil
   end
 
-  return domain_name:match('^SSH:(.+)$')
+  return domain_name:match('^' .. prefix .. '(.+)$')
 end
 
-local function plain_ssh_choices(domains)
+local function ssh_choices(domains, prefix)
   local choices = {}
 
   for _, domain in ipairs(domains or {}) do
-    local host = plain_ssh_host_name(domain.name)
+    local host = ssh_host_name(domain.name, prefix)
     if host then
       table.insert(choices, {
         id = domain.name,
@@ -51,7 +51,7 @@ end
 local function append_ssh_launch_menu(config, domains)
   config.launch_menu = config.launch_menu or {}
 
-  for _, choice in ipairs(plain_ssh_choices(domains)) do
+  for _, choice in ipairs(ssh_choices(domains, 'SSH:')) do
     table.insert(config.launch_menu, {
       label = 'SSH: ' .. choice.label,
       domain = { DomainName = choice.id },
@@ -61,7 +61,7 @@ end
 
 local function ssh_host_selector(wezterm, act, domains)
   return wezterm.action_callback(function(window, pane)
-    local choices = plain_ssh_choices(domains)
+    local choices = ssh_choices(domains, 'SSH:')
 
     if #choices == 0 then
       window:toast_notification(
@@ -92,6 +92,39 @@ local function ssh_host_selector(wezterm, act, domains)
   end)
 end
 
+local function ssh_mux_selector(wezterm, act, domains)
+  return wezterm.action_callback(function(window, pane)
+    local choices = ssh_choices(domains, 'SSHMUX:')
+
+    if #choices == 0 then
+      window:toast_notification(
+        'SSHMUX hosts',
+        'No SSHMUX entries were found in your ssh config',
+        nil,
+        3000
+      )
+      return
+    end
+
+    window:perform_action(
+      act.InputSelector({
+        title = 'SSHMUX hosts',
+        description = 'Select a host and press Enter = attach mux domain, Esc = cancel, / = filter',
+        fuzzy = true,
+        choices = choices,
+        action = wezterm.action_callback(function(selected_window, selected_pane, id)
+          if not id then
+            return
+          end
+
+          selected_window:perform_action(act.AttachDomain(id), selected_pane)
+        end),
+      }),
+      pane
+    )
+  end)
+end
+
 function M.apply(config, wezterm)
   local act = wezterm.action
   local domains = default_ssh_domains(wezterm)
@@ -104,6 +137,16 @@ function M.apply(config, wezterm)
       key = 'S',
       mods = 'LEADER|SHIFT',
       action = ssh_host_selector(wezterm, act, domains),
+    },
+    {
+      key = 'M',
+      mods = 'LEADER|SHIFT',
+      action = ssh_mux_selector(wezterm, act, domains),
+    },
+    {
+      key = 'D',
+      mods = 'LEADER|SHIFT',
+      action = act.DetachDomain('CurrentPaneDomain'),
     },
   })
 end
