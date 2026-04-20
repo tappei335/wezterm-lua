@@ -1,3 +1,5 @@
+local theme = require('wezterm_config.theme')
+
 local M = {}
 
 local function basename(path)
@@ -83,62 +85,136 @@ local function active_mode(window)
   return nil
 end
 
-local function append_segment(elements, label, value, colors)
+local function append_segment(elements, label, value, colors, accent)
   if not value or value == '' then
     return
   end
 
   if #elements > 0 then
+    table.insert(elements, { Background = { Color = colors.background } })
     table.insert(elements, { Foreground = { Color = colors.separator } })
-    table.insert(elements, { Text = ' | ' })
+    table.insert(elements, { Text = ' ' })
   end
 
-  table.insert(elements, { Foreground = { Color = colors.label } })
-  table.insert(elements, { Text = label .. ':' })
+  table.insert(elements, { Background = { Color = colors.segment } })
+  table.insert(elements, { Foreground = { Color = accent or colors.label } })
+  table.insert(elements, { Attribute = { Intensity = 'Bold' } })
+  table.insert(elements, { Text = ' ' .. label .. ' ' })
   table.insert(elements, { Foreground = { Color = colors.text } })
-  table.insert(elements, { Text = value })
+  table.insert(elements, { Attribute = { Intensity = 'Normal' } })
+  table.insert(elements, { Text = value .. ' ' })
 end
 
 local function format_status(wezterm, segments, colors)
   local elements = {}
 
   for _, segment in ipairs(segments) do
-    append_segment(elements, segment.label, segment.value, colors)
+    append_segment(elements, segment.label, segment.value, colors, segment.accent)
   end
 
   return wezterm.format(elements)
+end
+
+local function truncate_right(value, max_width)
+  if not value then
+    return ''
+  end
+
+  if #value <= max_width then
+    return value
+  end
+
+  if max_width <= 1 then
+    return value:sub(1, max_width)
+  end
+
+  return value:sub(1, max_width - 1) .. '~'
+end
+
+local function tab_title(tab)
+  local title = tab.tab_title
+  if title and title ~= '' then
+    return title
+  end
+
+  if tab.active_pane and tab.active_pane.title then
+    return tab.active_pane.title
+  end
+
+  return 'tab'
 end
 
 function M.apply(config, wezterm)
   config.status_update_interval = 500
   config.hide_tab_bar_if_only_one_tab = false
 
+  local palette = theme.colors
   local left_colors = {
-    label = '#7e9cd8',
-    text = '#dcd7ba',
-    separator = '#54546d',
+    background = palette.bg_dark,
+    segment = palette.bg_highlight,
+    label = palette.blue,
+    text = palette.fg,
+    separator = palette.muted,
   }
   local right_colors = {
-    label = '#98bb6c',
-    text = '#dcd7ba',
-    separator = '#54546d',
+    background = palette.bg_dark,
+    segment = palette.bg_highlight,
+    label = palette.green,
+    text = palette.fg,
+    separator = palette.muted,
   }
+
+  wezterm.on('format-tab-title', function(tab, _, _, _, hover, max_width)
+    local is_active = tab.is_active
+    local background = palette.bg_highlight
+    local foreground = palette.fg_dim
+
+    if hover then
+      background = palette.bg_visual
+      foreground = palette.fg
+    end
+
+    if is_active then
+      background = palette.bg_visual
+      foreground = palette.fg
+    end
+
+    local index = tostring(tab.tab_index + 1)
+    local title = truncate_right(tab_title(tab), math.max(1, max_width - #index - 4))
+    local index_foreground = is_active and palette.yellow or palette.muted
+
+    return {
+      { Background = { Color = palette.bg_dark } },
+      { Foreground = { Color = background } },
+      { Text = ' ' },
+      { Background = { Color = background } },
+      { Foreground = { Color = index_foreground } },
+      { Attribute = { Intensity = is_active and 'Bold' or 'Normal' } },
+      { Text = index .. ':' },
+      { Foreground = { Color = foreground } },
+      { Text = title .. ' ' },
+      { Background = { Color = palette.bg_dark } },
+      { Foreground = { Color = palette.bg_dark } },
+      { Attribute = { Intensity = 'Normal' } },
+      { Text = ' ' },
+    }
+  end)
 
   wezterm.on('update-status', function(window, pane)
     local mode = active_mode(window)
     local left_segments = {
-      { label = 'ws', value = window:active_workspace() },
-      { label = 'mode', value = mode },
+      { label = 'WS', value = window:active_workspace(), accent = palette.blue },
+      { label = 'MODE', value = mode, accent = palette.orange },
     }
 
     local cwd = current_directory_name(pane)
     local process = foreground_process_name(pane)
     local domain = domain_name(pane)
     local right_segments = {
-      { label = 'dir', value = cwd },
-      { label = 'proc', value = process },
-      { label = 'dom', value = domain },
-      { label = 'time', value = wezterm.strftime('%H:%M') },
+      { label = 'DIR', value = cwd, accent = palette.green },
+      { label = 'PROC', value = process, accent = palette.cyan },
+      { label = 'DOM', value = domain, accent = palette.yellow },
+      { label = 'TIME', value = wezterm.strftime('%H:%M'), accent = palette.blue },
     }
 
     window:set_left_status(' ' .. format_status(wezterm, left_segments, left_colors) .. ' ')
