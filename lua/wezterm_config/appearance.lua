@@ -4,12 +4,13 @@ local M = {}
 
 function M.apply(config)
   local colors = theme.colors
+  local ui = theme.ui
 
   config.text_background_opacity = 1.0
   config.window_padding = {
-    left = 10,
-    right = 10,
-    top = 8,
+    left = 12,
+    right = 12,
+    top = 10,
     bottom = 8,
   }
 
@@ -18,7 +19,6 @@ function M.apply(config)
   config.cursor_blink_rate = 500
   config.default_cursor_style = 'BlinkingBlock'
   config.window_decorations = 'RESIZE'
-  config.hide_tab_bar_if_only_one_tab = true
   config.tab_bar_at_bottom = false
   config.colors = {
     foreground = colors.fg,
@@ -31,35 +31,35 @@ function M.apply(config)
     scrollbar_thumb = colors.muted,
     split = colors.muted,
     tab_bar = {
-      background = colors.bg_dark,
+      background = ui.tab_bar_bg,
       active_tab = {
-        bg_color = colors.bg_visual,
+        bg_color = ui.tab_active,
         fg_color = colors.fg,
         intensity = 'Bold',
       },
       inactive_tab = {
-        bg_color = colors.bg_highlight,
+        bg_color = ui.tab_inactive,
         fg_color = colors.fg_dim,
       },
       inactive_tab_hover = {
-        bg_color = colors.bg_visual,
+        bg_color = ui.tab_hover,
         fg_color = colors.fg,
         italic = false,
       },
       new_tab = {
-        bg_color = colors.bg_dark,
-        fg_color = colors.muted,
+        bg_color = ui.tab_bar_bg,
+        fg_color = ui.status_muted,
       },
       new_tab_hover = {
-        bg_color = colors.bg_highlight,
+        bg_color = ui.tab_inactive,
         fg_color = colors.fg,
         italic = false,
       },
     },
   }
   config.window_frame = {
-    inactive_titlebar_bg = colors.bg_dark,
-    active_titlebar_bg = colors.bg_dark,
+    inactive_titlebar_bg = ui.window_frame,
+    active_titlebar_bg = ui.window_frame,
   }
 end
 

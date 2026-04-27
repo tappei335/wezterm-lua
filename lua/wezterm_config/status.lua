@@ -69,6 +69,11 @@ local function domain_name(pane)
     return nil
   end
 
+  local _, suffix = domain:match('^([^:]+):(.*)$')
+  if suffix and suffix ~= '' then
+    return suffix
+  end
+
   return domain
 end
 
@@ -83,36 +88,6 @@ local function active_mode(window)
   end
 
   return nil
-end
-
-local function append_segment(elements, label, value, colors, accent)
-  if not value or value == '' then
-    return
-  end
-
-  if #elements > 0 then
-    table.insert(elements, { Background = { Color = colors.background } })
-    table.insert(elements, { Foreground = { Color = colors.separator } })
-    table.insert(elements, { Text = ' ' })
-  end
-
-  table.insert(elements, { Background = { Color = colors.segment } })
-  table.insert(elements, { Foreground = { Color = accent or colors.label } })
-  table.insert(elements, { Attribute = { Intensity = 'Bold' } })
-  table.insert(elements, { Text = ' ' .. label .. ' ' })
-  table.insert(elements, { Foreground = { Color = colors.text } })
-  table.insert(elements, { Attribute = { Intensity = 'Normal' } })
-  table.insert(elements, { Text = value .. ' ' })
-end
-
-local function format_status(wezterm, segments, colors)
-  local elements = {}
-
-  for _, segment in ipairs(segments) do
-    append_segment(elements, segment.label, segment.value, colors, segment.accent)
-  end
-
-  return wezterm.format(elements)
 end
 
 local function truncate_right(value, max_width)
@@ -144,58 +119,115 @@ local function tab_title(tab)
   return 'tab'
 end
 
+local function append_text(elements, background, foreground, text, intensity)
+  table.insert(elements, { Background = { Color = background } })
+  table.insert(elements, { Foreground = { Color = foreground } })
+  table.insert(elements, { Attribute = { Intensity = intensity or 'Normal' } })
+  table.insert(elements, { Text = text })
+end
+
+local function append_separator(elements, left_background, right_background)
+  append_text(elements, left_background, right_background, '>', 'Normal')
+end
+
+local function format_segments(wezterm, segments, opts)
+  local elements = {}
+  local current_background = opts.background
+  local use_alt_surface = false
+
+  for _, segment in ipairs(segments) do
+    if segment.value and segment.value ~= '' then
+      local surface = use_alt_surface and opts.surface_alt or opts.surface
+      local accent = segment.accent or opts.accent
+
+      append_separator(elements, current_background, accent)
+      append_text(elements, accent, opts.accent_text, ' ' .. segment.label .. ' ', 'Bold')
+      append_separator(elements, accent, surface)
+      append_text(elements, surface, opts.text, ' ' .. segment.value .. ' ', 'Normal')
+
+      current_background = surface
+      use_alt_surface = not use_alt_surface
+    end
+  end
+
+  if #elements == 0 then
+    return ''
+  end
+
+  append_separator(elements, current_background, opts.background)
+  return wezterm.format(elements)
+end
+
 function M.apply(config, wezterm)
   config.status_update_interval = 500
-  config.hide_tab_bar_if_only_one_tab = false
 
   local palette = theme.colors
-  local left_colors = {
-    background = palette.bg_dark,
-    segment = palette.bg_highlight,
-    label = palette.blue,
-    text = palette.fg,
-    separator = palette.muted,
+  local ui = theme.ui
+  local left_status = {
+    background = ui.status_bg,
+    surface = ui.status_surface,
+    surface_alt = ui.status_surface_alt,
+    accent = palette.blue,
+    accent_text = palette.bg_dark,
+    text = ui.status_text,
   }
-  local right_colors = {
-    background = palette.bg_dark,
-    segment = palette.bg_highlight,
-    label = palette.green,
-    text = palette.fg,
-    separator = palette.muted,
+  local right_status = {
+    background = ui.status_bg,
+    surface = ui.status_surface,
+    surface_alt = ui.status_surface_alt,
+    accent = palette.green,
+    accent_text = palette.bg_dark,
+    text = ui.status_text,
   }
 
   wezterm.on('format-tab-title', function(tab, _, _, _, hover, max_width)
     local is_active = tab.is_active
-    local background = palette.bg_highlight
-    local foreground = palette.fg_dim
+    local index = tostring(tab.tab_index + 1)
+    local title = truncate_right(tab_title(tab), math.max(1, max_width - #index - 7))
+    local label_background = theme.mix(ui.tab_inactive, palette.fg_dim, 0.15)
+    local label_foreground = palette.fg_dim
+    local body_background = ui.tab_inactive
+    local body_foreground = palette.fg_dim
+    local intensity = 'Normal'
 
     if hover then
-      background = palette.bg_visual
-      foreground = palette.fg
+      label_background = theme.mix(ui.tab_hover, palette.blue, 0.28)
+      label_foreground = palette.fg
+      body_background = ui.tab_hover
+      body_foreground = palette.fg
     end
 
     if is_active then
-      background = palette.bg_visual
-      foreground = palette.fg
+      label_background = palette.blue
+      label_foreground = palette.bg_dark
+      body_background = ui.tab_active
+      body_foreground = palette.fg
+      intensity = 'Bold'
     end
 
-    local index = tostring(tab.tab_index + 1)
-    local title = truncate_right(tab_title(tab), math.max(1, max_width - #index - 4))
-    local index_foreground = is_active and palette.yellow or palette.muted
-
     return {
-      { Background = { Color = palette.bg_dark } },
-      { Foreground = { Color = background } },
-      { Text = ' ' },
-      { Background = { Color = background } },
-      { Foreground = { Color = index_foreground } },
-      { Attribute = { Intensity = is_active and 'Bold' or 'Normal' } },
-      { Text = index .. ':' },
-      { Foreground = { Color = foreground } },
-      { Text = title .. ' ' },
-      { Background = { Color = palette.bg_dark } },
-      { Foreground = { Color = palette.bg_dark } },
+      { Background = { Color = ui.tab_bar_bg } },
+      { Foreground = { Color = label_background } },
       { Attribute = { Intensity = 'Normal' } },
+      { Text = '>' },
+      { Background = { Color = label_background } },
+      { Foreground = { Color = label_foreground } },
+      { Attribute = { Intensity = intensity } },
+      { Text = ' ' .. index .. ' ' },
+      { Background = { Color = label_background } },
+      { Foreground = { Color = body_background } },
+      { Attribute = { Intensity = 'Normal' } },
+      { Text = '>' },
+      { Background = { Color = body_background } },
+      { Foreground = { Color = body_foreground } },
+      { Attribute = { Intensity = intensity } },
+      { Text = ' ' .. title .. ' ' },
+      { Background = { Color = body_background } },
+      { Foreground = { Color = ui.tab_bar_bg } },
+      { Attribute = { Intensity = 'Normal' } },
+      { Text = '>' },
+      { Background = { Color = ui.tab_bar_bg } },
+      { Foreground = { Color = ui.tab_bar_bg } },
       { Text = ' ' },
     }
   end)
@@ -217,8 +249,11 @@ function M.apply(config, wezterm)
       { label = 'TIME', value = wezterm.strftime('%H:%M'), accent = palette.blue },
     }
 
-    window:set_left_status(' ' .. format_status(wezterm, left_segments, left_colors) .. ' ')
-    window:set_right_status(' ' .. format_status(wezterm, right_segments, right_colors) .. ' ')
+    local left = format_segments(wezterm, left_segments, left_status)
+    local right = format_segments(wezterm, right_segments, right_status)
+
+    window:set_left_status(left ~= '' and (' ' .. left) or '')
+    window:set_right_status(right ~= '' and (right .. ' ') or '')
   end)
 end
 
