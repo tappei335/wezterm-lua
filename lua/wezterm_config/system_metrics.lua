@@ -86,30 +86,20 @@ local function read_file(path)
   return content
 end
 
-local function run_command(command)
-  local handle = io.popen(command, 'r')
-  if not handle then
-    return nil
-  end
-
-  local ok, output = pcall(function()
-    return handle:read('*a')
+local function run_child_process(args)
+  local ok, success, stdout = pcall(function()
+    return wezterm.run_child_process(args)
   end)
-  handle:close()
 
-  if not ok then
+  if not ok or not success then
     return nil
   end
 
-  return trim(output)
+  return trim(stdout)
 end
 
 local function quote_posix(value)
   return "'" .. tostring(value):gsub("'", [['"'"']]) .. "'"
-end
-
-local function quote_cmd(value)
-  return '"' .. tostring(value):gsub('"', '""') .. '"'
 end
 
 local function platform_name(wezterm)
@@ -140,18 +130,16 @@ local function collect_windows_metrics(drive)
 
   local output
   for _, shell in ipairs(shells) do
-    local command = table.concat({
+    output = run_child_process({
       shell,
       '-NoLogo',
       '-NoProfile',
       '-NonInteractive',
       '-File',
-      quote_cmd(script_path),
+      script_path,
       '-Drive',
-      quote_cmd(drive_name),
-      '2>nul',
-    }, ' ')
-    output = run_command(command)
+      drive_name,
+    })
     if output then
       break
     end
@@ -180,8 +168,7 @@ mem=$(awk -v total="$total" -v free="$free_pages" -v spec="$spec_pages" -v page=
 disk=$(df -P %s | awk 'NR==2 { gsub("%%","",$5); print $5 }')
 printf "%%s|%%s|%%s" "$cpu" "$mem" "$disk"
 ]]):format(quote_posix(path or '/'))
-  local command = '/bin/sh -lc ' .. quote_posix(script) .. ' 2>/dev/null'
-  local output = run_command(command)
+  local output = run_child_process({ '/bin/sh', '-lc', script })
   if not output then
     return nil, nil, nil
   end
@@ -255,8 +242,7 @@ local function parse_linux_memory()
 end
 
 local function parse_linux_disk(path)
-  local command = 'df -P ' .. quote_posix(path or '/') .. " 2>/dev/null"
-  local output = run_command(command)
+  local output = run_child_process({ 'df', '-P', path or '/' })
   if not output then
     return nil
   end
