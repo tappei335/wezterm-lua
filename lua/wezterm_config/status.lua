@@ -1,4 +1,5 @@
 local theme = require('wezterm_config.theme')
+local system_metrics = require('wezterm_config.system_metrics')
 
 local M = {}
 
@@ -42,9 +43,13 @@ local function decode_uri_path(value)
   return path, host
 end
 
-local function current_directory_name(pane)
+local function current_directory_path(pane)
   local cwd_uri = pane:get_current_working_dir()
-  local cwd = decode_uri_path(cwd_uri)
+  return decode_uri_path(cwd_uri)
+end
+
+local function current_directory_name(pane)
+  local cwd = current_directory_path(pane)
   return basename(cwd)
 end
 
@@ -119,6 +124,30 @@ local function tab_title(tab)
   return 'tab'
 end
 
+local function format_percent(value)
+  if value == nil then
+    return nil
+  end
+
+  return string.format('%d%%', value)
+end
+
+local function usage_accent(value, palette, ok_color)
+  if value == nil then
+    return ok_color
+  end
+
+  if value >= 85 then
+    return palette.red
+  end
+
+  if value >= 65 then
+    return palette.orange
+  end
+
+  return ok_color
+end
+
 local function append_text(elements, background, foreground, text, intensity)
   table.insert(elements, { Background = { Color = background } })
   table.insert(elements, { Foreground = { Color = foreground } })
@@ -140,9 +169,7 @@ local function format_segments(wezterm, segments, opts)
       local surface = use_alt_surface and opts.surface_alt or opts.surface
       local accent = segment.accent or opts.accent
 
-      append_separator(elements, current_background, accent)
       append_text(elements, accent, opts.accent_text, ' ' .. segment.label .. ' ', 'Bold')
-      append_separator(elements, accent, surface)
       append_text(elements, surface, opts.text, ' ' .. segment.value .. ' ', 'Normal')
 
       current_background = surface
@@ -209,7 +236,6 @@ function M.apply(config, wezterm)
       { Background = { Color = ui.tab_bar_bg } },
       { Foreground = { Color = label_background } },
       { Attribute = { Intensity = 'Normal' } },
-      { Text = '>' },
       { Background = { Color = label_background } },
       { Foreground = { Color = label_foreground } },
       { Attribute = { Intensity = intensity } },
@@ -217,7 +243,6 @@ function M.apply(config, wezterm)
       { Background = { Color = label_background } },
       { Foreground = { Color = body_background } },
       { Attribute = { Intensity = 'Normal' } },
-      { Text = '>' },
       { Background = { Color = body_background } },
       { Foreground = { Color = body_foreground } },
       { Attribute = { Intensity = intensity } },
@@ -225,7 +250,6 @@ function M.apply(config, wezterm)
       { Background = { Color = body_background } },
       { Foreground = { Color = ui.tab_bar_bg } },
       { Attribute = { Intensity = 'Normal' } },
-      { Text = '>' },
       { Background = { Color = ui.tab_bar_bg } },
       { Foreground = { Color = ui.tab_bar_bg } },
       { Text = ' ' },
@@ -239,10 +263,15 @@ function M.apply(config, wezterm)
       { label = 'MODE', value = mode, accent = palette.orange },
     }
 
+    local cwd_path = current_directory_path(pane)
     local cwd = current_directory_name(pane)
     local process = foreground_process_name(pane)
     local domain = domain_name(pane)
+    local metrics = system_metrics.snapshot(wezterm, cwd_path)
     local right_segments = {
+      { label = 'CPU', value = format_percent(metrics.cpu), accent = usage_accent(metrics.cpu, palette, palette.cyan) },
+      { label = 'MEM', value = format_percent(metrics.memory), accent = usage_accent(metrics.memory, palette, palette.blue) },
+      { label = 'DSK', value = format_percent(metrics.disk), accent = usage_accent(metrics.disk, palette, palette.green) },
       { label = 'DIR', value = cwd, accent = palette.green },
       { label = 'PROC', value = process, accent = palette.cyan },
       { label = 'DOM', value = domain, accent = palette.yellow },
