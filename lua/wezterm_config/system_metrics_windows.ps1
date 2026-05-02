@@ -1,6 +1,15 @@
 param(
+  [ValidateSet('Dynamic', 'Static')]
+  [string]$Mode = 'Dynamic',
   [string]$Drive = 'C:'
 )
+
+if ($Mode -eq 'Static') {
+  $memoryTotal = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
+  $cpuCores = (Get-CimInstance -ClassName Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+  '{0}|{1}' -f $memoryTotal, $cpuCores
+  exit
+}
 
 $cpuMeasure = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average
 $cpu = if ($cpuMeasure.Average -ne $null) {

@@ -65,12 +65,21 @@ local function foreground_process_name(pane)
   return basename(process)
 end
 
-local function domain_name(pane)
+local function raw_domain_name(pane)
   local ok, domain = pcall(function()
     return pane:get_domain_name()
   end)
 
   if not ok or not domain or domain == '' then
+    return nil
+  end
+
+  return domain
+end
+
+local function domain_name(pane)
+  local domain = raw_domain_name(pane)
+  if not domain then
     return nil
   end
 
@@ -267,7 +276,8 @@ function M.apply(config, wezterm)
     local cwd = current_directory_name(pane)
     local process = foreground_process_name(pane)
     local domain = domain_name(pane)
-    local metrics = system_metrics.snapshot(wezterm, cwd_path)
+    local raw_domain = raw_domain_name(pane)
+    local metrics = system_metrics.snapshot(wezterm, pane, cwd_path, raw_domain)
     local right_segments = {
       { label = 'CPU', value = format_percent(metrics.cpu), accent = usage_accent(metrics.cpu, palette, palette.cyan) },
       { label = 'MEM', value = format_percent(metrics.memory), accent = usage_accent(metrics.memory, palette, palette.blue) },

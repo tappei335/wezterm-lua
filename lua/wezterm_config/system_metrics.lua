@@ -11,9 +11,14 @@ local SYSTEM_REFRESH_SECONDS = {
 }
 
 local DISK_REFRESH_SECONDS = 30
+local REMOTE_METRICS_MAX_AGE_SECONDS = 20
 
 local state = {
   platform_name = nil,
+  static = {
+    cpu_cores = nil,
+    memory_total_bytes = nil,
+  },
   system = {
     cpu = nil,
     memory = nil,
@@ -110,6 +115,76 @@ local function platform_name(wezterm)
   return state.platform_name
 end
 
+local function is_remote_domain(domain)
+  if not domain or domain == '' then
+    return false
+  end
+
+  return domain:match('^SSH:') ~= nil or domain:match('^SSHMUX:') ~= nil
+end
+
+local function pane_user_vars(pane)
+  if not pane then
+    return {}
+  end
+
+  local ok, user_vars = pcall(function()
+    return pane:get_user_vars()
+  end)
+
+  if not ok or type(user_vars) ~= 'table' then
+    return {}
+  end
+
+  return user_vars
+end
+
+local function parse_user_var_percent(value)
+  local number = tonumber(value)
+  if not number then
+    return nil
+  end
+
+  return round(clamp_percent(number))
+end
+
+local function parse_remote_timestamp(value)
+  local timestamp = tonumber(value)
+  if not timestamp then
+    return nil
+  end
+
+  if timestamp > 9999999999 then
+    timestamp = math.floor(timestamp / 1000)
+  end
+
+  return timestamp
+end
+
+local function remote_metrics_from_user_vars(pane)
+  local user_vars = pane_user_vars(pane)
+  local timestamp = parse_remote_timestamp(user_vars.WEZTERM_REMOTE_TS)
+
+  if not timestamp or (now() - timestamp) > REMOTE_METRICS_MAX_AGE_SECONDS then
+    return nil
+  end
+
+  local cpu = parse_user_var_percent(user_vars.WEZTERM_REMOTE_CPU)
+  local memory = parse_user_var_percent(user_vars.WEZTERM_REMOTE_MEM)
+  local disk = parse_user_var_percent(user_vars.WEZTERM_REMOTE_DSK)
+
+  if cpu == nil and memory == nil and disk == nil then
+    return nil
+  end
+
+  return {
+    cpu = cpu,
+    memory = memory,
+    disk = disk,
+    source = 'remote',
+  }
+end
+
 local function disk_key_for(platform_id, cwd_path)
   if platform_id == 'windows' then
     local drive = cwd_path and cwd_path:match('^/?([A-Za-z]:)')
@@ -157,6 +232,35 @@ local function collect_windows_metrics(drive)
   return round(clamp_percent(cpu)), round(clamp_percent(memory)), round(clamp_percent(disk))
 end
 
+local function collect_windows_static()
+  local script_path = wezterm.config_dir .. '/lua/wezterm_config/system_metrics_windows.ps1'
+  local shells = { 'pwsh.exe', 'powershell.exe' }
+
+  local output
+  for _, shell in ipairs(shells) do
+    output = run_child_process({
+      shell,
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-File',
+      script_path,
+      '-Mode',
+      'Static',
+    })
+    if output then
+      break
+    end
+  end
+
+  if not output then
+    return nil, nil
+  end
+
+  local memory_total_text, cpu_cores_text = output:match('^(%d*)|(%d*)$')
+  return tonumber(memory_total_text), tonumber(cpu_cores_text)
+end
+
 local function collect_macos_metrics(path)
   local script = ([[
 cpu=$(top -l 2 -n 0 | awk '/CPU usage/ { idle=$(NF-1) } END { gsub("%%","",idle); printf "%%d", 100 - idle }')
@@ -175,6 +279,68 @@ printf "%%s|%%s|%%s" "$cpu" "$mem" "$disk"
 
   local cpu_text, memory_text, disk_text = output:match('^(%d+)|(%d+)|(%d+)$')
   return tonumber(cpu_text), tonumber(memory_text), tonumber(disk_text)
+end
+
+local function collect_macos_static()
+  local output = run_child_process({ '/usr/sbin/sysctl', '-n', 'hw.memsize', 'hw.ncpu' })
+  if not output then
+    return nil, nil
+  end
+
+  local values = {}
+  for line in output:gmatch('[^\r\n]+') do
+    table.insert(values, tonumber(line))
+  end
+
+  return values[1], values[2]
+end
+
+local function collect_linux_static()
+  local meminfo = read_file('/proc/meminfo')
+  local memory_total_bytes
+  if meminfo then
+    local total_kib = tonumber(meminfo:match('MemTotal:%s+(%d+)'))
+    if total_kib then
+      memory_total_bytes = total_kib * 1024
+    end
+  end
+
+  local cpuinfo = read_file('/proc/cpuinfo')
+  local cpu_cores = 0
+  if cpuinfo then
+    for line in cpuinfo:gmatch('[^\r\n]+') do
+      if line:match('^processor%s*:') then
+        cpu_cores = cpu_cores + 1
+      end
+    end
+  end
+
+  return memory_total_bytes, cpu_cores > 0 and cpu_cores or nil
+end
+
+local function ensure_static_metrics(platform_id)
+  if state.static.memory_total_bytes ~= nil and state.static.cpu_cores ~= nil then
+    return
+  end
+
+  local memory_total_bytes
+  local cpu_cores
+
+  if platform_id == 'windows' then
+    memory_total_bytes, cpu_cores = collect_windows_static()
+  elseif platform_id == 'macos' then
+    memory_total_bytes, cpu_cores = collect_macos_static()
+  elseif platform_id == 'linux' then
+    memory_total_bytes, cpu_cores = collect_linux_static()
+  end
+
+  if state.static.memory_total_bytes == nil then
+    state.static.memory_total_bytes = memory_total_bytes
+  end
+
+  if state.static.cpu_cores == nil then
+    state.static.cpu_cores = cpu_cores
+  end
 end
 
 local function parse_linux_cpu()
@@ -318,8 +484,28 @@ local function refresh_linux_metrics(disk_key, timestamp)
   end
 end
 
-function M.snapshot(wezterm, cwd_path)
+function M.snapshot(wezterm, pane, cwd_path, domain)
   local current_platform = platform_name(wezterm)
+  ensure_static_metrics(current_platform)
+
+  if is_remote_domain(domain) then
+    local remote_metrics = remote_metrics_from_user_vars(pane)
+    if remote_metrics then
+      remote_metrics.cpu_cores = nil
+      remote_metrics.memory_total_bytes = nil
+      return remote_metrics
+    end
+
+    return {
+      cpu = nil,
+      memory = nil,
+      disk = nil,
+      source = 'remote-unavailable',
+      cpu_cores = state.static.cpu_cores,
+      memory_total_bytes = state.static.memory_total_bytes,
+    }
+  end
+
   local timestamp = now()
   local disk_key = disk_key_for(current_platform, cwd_path)
   local system_refresh = SYSTEM_REFRESH_SECONDS[current_platform] or SYSTEM_REFRESH_SECONDS.unknown
@@ -340,6 +526,9 @@ function M.snapshot(wezterm, cwd_path)
     cpu = state.system.cpu,
     memory = state.system.memory,
     disk = disk,
+    source = 'local',
+    cpu_cores = state.static.cpu_cores,
+    memory_total_bytes = state.static.memory_total_bytes,
   }
 end
 
